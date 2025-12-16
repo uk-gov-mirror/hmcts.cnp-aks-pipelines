@@ -17,6 +17,8 @@ parameters:
       - serviceConnection: azurerm-prod
         acrName: 'hmctspublic'
       - serviceConnection: azurerm-prod
+        acrName: 'hmctsprod'
+      - serviceConnection: azurerm-prod
         acrName: 'hmctsprivate'
       - serviceConnection: DTS-SHAREDSERVICES-PROD
         acrName: 'sdshmctspublic'
@@ -24,6 +26,8 @@ parameters:
         acrName: 'sdshmctspublicsbox'
       - serviceConnection: azurerm-sandbox
         acrName: "hmctssandbox"
+      - serviceConnection: azurerm-sandbox
+        acrName: "hmctssbox"
 
   - name: cleanup_patterns
     type: object
