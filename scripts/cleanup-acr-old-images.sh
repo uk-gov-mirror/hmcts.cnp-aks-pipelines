@@ -33,7 +33,7 @@ is_transient_error() {
 
 # Function to run cleanup with retry logic
 run_cleanup_with_retry() {
-    local max_retries=3
+    local max_retries=5
     local retry_delay=30  # seconds
     local attempt=1
     local temp_log=$(mktemp)
