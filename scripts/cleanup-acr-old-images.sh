@@ -49,7 +49,7 @@ run_cleanup_with_retry() {
         # Note: az acr run output goes to the task logs, but we can check exit code
         set +e
         az acr run --registry "$registry" \
-            --cmd "acr purge --registry \$RegistryName ${filter_args} --ago ${older_than} --keep ${keep_min_latest_num} --untagged --concurrency 5" \
+            --cmd "acr purge --registry \$RegistryName ${filter_args} --ago ${older_than} --keep ${keep_min_latest_num} --untagged --concurrency 1" \
             --timeout 10800 /dev/null > "$temp_log" 2>&1
         exit_code=$?
         last_output=$(cat "$temp_log" 2>/dev/null || echo "")
