@@ -1,0 +1,48 @@
+trigger: none
+pr: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+- task: AzureCLI@2
+  displayName: "Find and Delete ACR tags from Feb 2026"
+  inputs:
+    azureSubscription: "azurerm-prod"
+    scriptType: "bash"
+    scriptLocation: "inlineScript"
+    inlineScript: |
+      set -euo pipefail
+
+      # Define ACR and repository
+      ACR_NAME="hmctsprod"
+      REPO_NAME="finrem/cos"
+
+      echo "Fetching tags for repository $REPO_NAME in $ACR_NAME..."
+
+      # Get list of tags with creation date
+      TAGS_JSON=$(az acr repository show-tags \
+        --name $ACR_NAME \
+        --repository $REPO_NAME \
+        --detail \
+        --output json)
+
+      # Filter tags created in February 2026
+      DELETE_TAGS=$(echo "$TAGS_JSON" | jq -r '.[] | select(.lastUpdateTime | startswith("2026-02")) | .name')
+
+      if [ -z "$DELETE_TAGS" ]; then
+        echo "No tags from Feb 2026 found in $REPO_NAME."
+      else
+        echo "Tags to delete:"
+        echo "$DELETE_TAGS"
+
+        # Loop and delete each tag
+        for TAG in $DELETE_TAGS; do
+          echo "Deleting tag: $TAG"
+          az acr repository delete \
+            --name $ACR_NAME \
+            --image $REPO_NAME:$TAG \
+            --yes
+        done
+        echo "Deletion complete."
+      fi
