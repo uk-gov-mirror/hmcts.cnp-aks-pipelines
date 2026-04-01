@@ -69,7 +69,7 @@ steps:
         # ---------- Rule 3: pr- ----------
         mapfile -t pr_matches < <(jq -r '.[] | select(.name | test("^pr-")) | "\(.name),\(.lastUpdateTime)"' tags.json)
         if [[ ${#pr_matches[@]} -gt 1 ]]; then
-          # Skip the newest 1
+          # Only save tags beyond the newest 1
           for entry in "${pr_matches[@]:1}"; do
             tag_name=$(echo "$entry" | cut -d',' -f1)
             tag_date=$(echo "$entry" | cut -d',' -f2)
@@ -80,6 +80,7 @@ steps:
             fi
           done
         fi
+        # If only 1 pr- tag, do nothing (skip) — meets your requirement
 
         # ---------- Rule 4: labs ----------
         if [[ "$repo" =~ ^labs/.* ]]; then
