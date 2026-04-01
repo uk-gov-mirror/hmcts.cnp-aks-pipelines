@@ -8,7 +8,7 @@ steps:
 - checkout: self
 
 - task: AzureCLI@2
-  displayName: "Find del.txt and delete ACR images"
+  displayName: "Delete ACR images from del.txt"
   inputs:
     azureSubscription: "azurerm-prod"
     scriptType: "bash"
@@ -20,58 +20,84 @@ steps:
       FILE=$(find "$(System.DefaultWorkingDirectory)" -type f -name "del.txt" | head -n 1)
 
       if [ -z "$FILE" ]; then
-        echo "No del.txt file found in the repo. Nothing to delete."
+        echo "No del.txt file found in the repo. Nothing to process."
         exit 0
       fi
 
       echo "Found file: $FILE"
       echo ""
 
-      # Read tab-separated file, skip header
-      tail -n +2 "$FILE" | while IFS=$'\t' read -r ACR_NAME IMAGE_NAME; do
+      FOUND_COUNT=0
+      DELETED_COUNT=0
+      NOT_FOUND_COUNT=0
+      FAILED_COUNT=0
 
-        # Skip blank lines
+      while IFS=$'\t' read -r ACR_NAME IMAGE_NAME; do
+
+        # Skip header
+        if [ "$ACR_NAME" = "acr_name" ]; then
+          continue
+        fi
+
+        # Skip empty lines
         if [ -z "${ACR_NAME:-}" ] || [ -z "${IMAGE_NAME:-}" ]; then
           continue
         fi
 
+        # Trim spaces / CRLF
+        ACR_NAME=$(echo "$ACR_NAME" | xargs)
+        IMAGE_NAME=$(echo "$IMAGE_NAME" | tr -d '\r' | xargs)
+
         echo "----------------------------------------"
         echo "ACR Name   : $ACR_NAME"
-        echo "Image/Tag  : $IMAGE_NAME"
+        echo "Image Name : $IMAGE_NAME"
 
         # Split repo and tag
         REPO="${IMAGE_NAME%%:*}"
         TAG="${IMAGE_NAME##*:}"
 
+        if [ "$REPO" = "$TAG" ]; then
+          echo "Invalid image format (expected repo:tag): $IMAGE_NAME"
+          FAILED_COUNT=$((FAILED_COUNT+1))
+          echo ""
+          continue
+        fi
+
         echo "Repository : $REPO"
         echo "Tag        : $TAG"
-        echo ""
-
-        echo "Checking if tag exists in ACR..."
+        echo "Checking if image exists in ACR..."
 
         if az acr repository show-tags \
           --name "$ACR_NAME" \
           --repository "$REPO" \
           --output tsv | grep -Fxq "$TAG"; then
 
-          echo "Tag found. Deleting..."
+          echo "Image found. Deleting..."
+          FOUND_COUNT=$((FOUND_COUNT+1))
 
-          az acr repository delete \
+          if az acr repository delete \
             --name "$ACR_NAME" \
             --image "$IMAGE_NAME" \
-            --yes
+            --yes; then
+            echo "Deleted successfully: $ACR_NAME / $IMAGE_NAME"
+            DELETED_COUNT=$((DELETED_COUNT+1))
+          else
+            echo "Delete failed: $ACR_NAME / $IMAGE_NAME"
+            FAILED_COUNT=$((FAILED_COUNT+1))
+          fi
 
-          echo "Deleted successfully: $ACR_NAME / $IMAGE_NAME"
         else
-          echo "Tag NOT found in ACR: $ACR_NAME / $IMAGE_NAME"
-          echo "Available similar tags:"
-          az acr repository show-tags \
-            --name "$ACR_NAME" \
-            --repository "$REPO" \
-            --output table | grep "pr-46" || true
+          echo "Image not found: $ACR_NAME / $IMAGE_NAME"
+          NOT_FOUND_COUNT=$((NOT_FOUND_COUNT+1))
         fi
 
         echo ""
-      done
+      done < "$FILE"
 
-      echo "ACR cleanup completed."
+      echo "========================================"
+      echo "ACR Cleanup Summary"
+      echo "Images Found     : $FOUND_COUNT"
+      echo "Images Deleted   : $DELETED_COUNT"
+      echo "Images Not Found : $NOT_FOUND_COUNT"
+      echo "Delete Failures  : $FAILED_COUNT"
+      echo "========================================"
