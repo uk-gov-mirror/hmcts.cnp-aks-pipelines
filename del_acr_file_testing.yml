@@ -5,8 +5,10 @@ pool:
   vmImage: 'ubuntu-latest'
 
 steps:
+- checkout: self
+
 - task: AzureCLI@2
-  displayName: "Find and Delete ACR tags from Feb 2026"
+  displayName: "Delete ACR images from del.txt"
   inputs:
     azureSubscription: "azurerm-prod"
     scriptType: "bash"
@@ -14,35 +16,36 @@ steps:
     inlineScript: |
       set -euo pipefail
 
-      # Define ACR and repository
-      ACR_NAME="hmctsprod"
-      REPO_NAME="finrem/cos"
+      FILE="del.txt"
 
-      echo "Fetching tags for repository $REPO_NAME in $ACR_NAME..."
-
-      # Get list of tags with creation date
-      TAGS_JSON=$(az acr repository show-tags \
-        --name $ACR_NAME \
-        --repository $REPO_NAME \
-        --detail \
-        --output json)
-
-      # Filter tags created in February 2026
-      DELETE_TAGS=$(echo "$TAGS_JSON" | jq -r '.[] | select(.lastUpdateTime | startswith("2026-02")) | .name')
-
-      if [ -z "$DELETE_TAGS" ]; then
-        echo "No tags from Feb 2026 found in $REPO_NAME."
-      else
-        echo "Tags to delete:"
-        echo "$DELETE_TAGS"
-
-        # Loop and delete each tag
-        for TAG in $DELETE_TAGS; do
-          echo "Deleting tag: $TAG"
-          az acr repository delete \
-            --name $ACR_NAME \
-            --image $REPO_NAME:$TAG \
-            --yes
-        done
-        echo "Deletion complete."
+      if [ ! -f "$FILE" ]; then
+        echo "ERROR: File $FILE not found in repo"
+        exit 1
       fi
+
+      echo "Reading deletion list from $FILE..."
+      echo ""
+
+      # Skip header and process file
+      tail -n +2 "$FILE" | while read -r ACR_NAME IMAGE_NAME; do
+
+        # Skip blank lines
+        if [ -z "${ACR_NAME:-}" ] || [ -z "${IMAGE_NAME:-}" ]; then
+          continue
+        fi
+
+        echo "----------------------------------------"
+        echo "ACR Name   : $ACR_NAME"
+        echo "Image/Tag  : $IMAGE_NAME"
+        echo "Deleting..."
+
+        az acr repository delete \
+          --name "$ACR_NAME" \
+          --image "$IMAGE_NAME" \
+          --yes
+
+        echo "Deleted: $ACR_NAME / $IMAGE_NAME"
+        echo ""
+      done
+
+      echo "All deletions completed."
