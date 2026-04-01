@@ -1,103 +1,96 @@
+# File: azure-pipelines.yml
 trigger: none
 pr: none
 
 pool:
   vmImage: 'ubuntu-latest'
 
-steps:
-- checkout: self
+variables:
+  # Azure Service Connection for ACR
+  azureServiceConnection: 'azurerm-prod'
 
+steps:
+
+# =============================
+# Step 1: Checkout Repo
+# =============================
+- checkout: self
+  displayName: "Checkout repository"
+
+# =============================
+# Step 2: Find del.txt
+# =============================
+- script: |
+    set -euo pipefail
+
+    echo "Searching for del.txt in repo..."
+    DEL_FILE=$(find $(System.DefaultWorkingDirectory) -type f -name "del.txt" | head -n 1)
+
+    if [[ -z "$DEL_FILE" ]]; then
+        echo "ERROR: del.txt not found in repo!"
+        exit 1
+    fi
+
+    echo "Found file: $DEL_FILE"
+    echo "##vso[task.setvariable variable=DEL_FILE_PATH]$DEL_FILE"
+  displayName: "Locate del.txt"
+
+# =============================
+# Step 3: Delete images from ACR
+# =============================
 - task: AzureCLI@2
   displayName: "Delete ACR images from del.txt"
   inputs:
-    azureSubscription: "azurerm-prod"
-    scriptType: "bash"
-    scriptLocation: "inlineScript"
+    azureSubscription: $(azureServiceConnection)
+    scriptType: bash
+    scriptLocation: inlineScript
     inlineScript: |
       set -euo pipefail
 
-      echo "Searching for del.txt in repo..."
-      FILE=$(find "$(System.DefaultWorkingDirectory)" -type f -name "del.txt" | head -n 1)
+      DEL_FILE="$DEL_FILE_PATH"
 
-      if [ -z "$FILE" ]; then
-        echo "No del.txt file found in the repo. Nothing to process."
-        exit 0
-      fi
+      echo "========================================"
+      echo "Starting ACR Cleanup based on $DEL_FILE"
+      echo "========================================"
 
-      echo "Found file: $FILE"
-      echo ""
-
-      FOUND_COUNT=0
-      DELETED_COUNT=0
-      NOT_FOUND_COUNT=0
-      FAILED_COUNT=0
+      IMAGES_FOUND=0
+      IMAGES_DELETED=0
+      IMAGES_NOT_FOUND=0
+      DELETE_FAILURES=0
 
       while IFS=$'\t' read -r ACR_NAME IMAGE_NAME; do
+        # Skip header or empty lines
+        [[ "$ACR_NAME" == "acr_name" || -z "$ACR_NAME" || -z "$IMAGE_NAME" ]] && continue
 
-        # Skip header
-        if [ "$ACR_NAME" = "acr_name" ]; then
-          continue
-        fi
-
-        # Skip empty lines
-        if [ -z "${ACR_NAME:-}" ] || [ -z "${IMAGE_NAME:-}" ]; then
-          continue
-        fi
-
-        # Trim spaces / CRLF
-        ACR_NAME=$(echo "$ACR_NAME" | xargs)
-        IMAGE_NAME=$(echo "$IMAGE_NAME" | tr -d '\r' | xargs)
-
-        echo "----------------------------------------"
-        echo "ACR Name   : $ACR_NAME"
-        echo "Image Name : $IMAGE_NAME"
-
-        # Split repo and tag
+        # Split IMAGE_NAME into repo and tag
         REPO="${IMAGE_NAME%%:*}"
         TAG="${IMAGE_NAME##*:}"
 
-        if [ "$REPO" = "$TAG" ]; then
-          echo "Invalid image format (expected repo:tag): $IMAGE_NAME"
-          FAILED_COUNT=$((FAILED_COUNT+1))
-          echo ""
-          continue
-        fi
+        echo "Checking ACR: $ACR_NAME, Repo: $REPO, Tag: $TAG"
 
-        echo "Repository : $REPO"
-        echo "Tag        : $TAG"
-        echo "Checking if image exists in ACR..."
+        if az acr repository show-tags --name "$ACR_NAME" --repository "$REPO" --output tsv | grep -Fxq "$TAG"; then
+          echo "✅ Image found: $REPO:$TAG"
+          ((IMAGES_FOUND++))
 
-        if az acr repository show-tags \
-          --name "$ACR_NAME" \
-          --repository "$REPO" \
-          --output tsv | grep -Fxq "$TAG"; then
-
-          echo "Image found. Deleting..."
-          FOUND_COUNT=$((FOUND_COUNT+1))
-
-          if az acr repository delete \
-            --name "$ACR_NAME" \
-            --image "$IMAGE_NAME" \
-            --yes; then
-            echo "Deleted successfully: $ACR_NAME / $IMAGE_NAME"
-            DELETED_COUNT=$((DELETED_COUNT+1))
+          # Delete the image
+          if az acr repository delete --name "$ACR_NAME" --image "$REPO:$TAG" --yes; then
+            echo "🗑️ Deleted $REPO:$TAG"
+            ((IMAGES_DELETED++))
           else
-            echo "Delete failed: $ACR_NAME / $IMAGE_NAME"
-            FAILED_COUNT=$((FAILED_COUNT+1))
+            echo "❌ Failed to delete $REPO:$TAG"
+            ((DELETE_FAILURES++))
           fi
-
         else
-          echo "Image not found: $ACR_NAME / $IMAGE_NAME"
-          NOT_FOUND_COUNT=$((NOT_FOUND_COUNT+1))
+          echo "⚠️ Image not found: $REPO:$TAG"
+          ((IMAGES_NOT_FOUND++))
         fi
 
-        echo ""
-      done < "$FILE"
+      done < "$DEL_FILE"
 
       echo "========================================"
       echo "ACR Cleanup Summary"
-      echo "Images Found     : $FOUND_COUNT"
-      echo "Images Deleted   : $DELETED_COUNT"
-      echo "Images Not Found : $NOT_FOUND_COUNT"
-      echo "Delete Failures  : $FAILED_COUNT"
+      echo "Images Found     : $IMAGES_FOUND"
+      echo "Images Deleted   : $IMAGES_DELETED"
+      echo "Images Not Found : $IMAGES_NOT_FOUND"
+      echo "Delete Failures  : $DELETE_FAILURES"
       echo "========================================"
