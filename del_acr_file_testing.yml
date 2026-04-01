@@ -197,4 +197,3 @@ steps:
           echo "❌ Invalid image format: $IMAGE"
           exit 1
         fi
-    displayName: 'Delete image with debugging'
