@@ -8,15 +8,48 @@ pool:
 
 steps:
 - task: AzureCLI@2
-  displayName: "List ACR repositories - hmctsprod"
+  displayName: "Find ACR repos with tags older than 14 days"
   inputs:
     azureSubscription: "azurerm-prod"
     scriptType: "bash"
     scriptLocation: "inlineScript"
     inlineScript: |
-      set -e
+      set -euo pipefail
 
       ACR_NAME="hmctsprod"
+      DAYS_OLD=14
+      CUTOFF_DATE=$(date -u -d "$DAYS_OLD days ago" +"%Y-%m-%dT%H:%M:%SZ")
 
-      echo "Listing repositories in ACR: $ACR_NAME"
-      az acr repository list --name $ACR_NAME --output table
+      echo "Checking ACR: $ACR_NAME"
+      echo "Cutoff date: $CUTOFF_DATE"
+      echo ""
+
+      repos=$(az acr repository list --name "$ACR_NAME" -o tsv)
+
+      found_old_repos=false
+
+      for repo in $repos; do
+        echo "Checking repository: $repo"
+
+        old_tags=$(az acr repository show-tags \
+          --name "$ACR_NAME" \
+          --repository "$repo" \
+          --detail \
+          --output json | jq -r --arg cutoff "$CUTOFF_DATE" '
+            .[] | select(.lastUpdateTime < $cutoff) | .name
+          ' || true)
+
+        if [[ -n "$old_tags" ]]; then
+          found_old_repos=true
+          echo "=========================================="
+          echo "Repository with tags older than $DAYS_OLD days: $repo"
+          echo "Old tags:"
+          echo "$old_tags"
+          echo "=========================================="
+          echo ""
+        fi
+      done
+
+      if [[ "$found_old_repos" == false ]]; then
+        echo "No repositories found with tags older than $DAYS_OLD days."
+      fi
