@@ -105,4 +105,3 @@ steps:
           echo "Expected format: acr-name.azurecr.io/repository:tag"
           exit 1
         fi
-      displayName: 'Check image existence'
