@@ -7,10 +7,16 @@ pool:
   vmImage: 'ubuntu-latest'
 
 steps:
-- script: echo Hello, world!
-  displayName: 'Run a one-line script'
+- task: AzureCLI@2
+  displayName: "List ACR repositories - hmctsprod"
+  inputs:
+    azureSubscription: "azurerm-prod"
+    scriptType: "bash"
+    scriptLocation: "inlineScript"
+    inlineScript: |
+      set -e
 
-- script: |
-    echo Add other tasks to build, test, and deploy your project.
-    echo See https://aka.ms/yaml
-  displayName: 'Run a multi-line script'
+      ACR_NAME="hmctsprod"
+
+      echo "Listing repositories in ACR: $ACR_NAME"
+      az acr repository list --name $ACR_NAME --output table
