@@ -9,7 +9,7 @@ steps:
     name: DeleteImageFromACR
     displayName: 'Check and delete image from ACR'
     inputs:
-      azureSubscription: 'azurerm-prod'
+      azureSubscription: 'azurerm-sandbox'
       scriptType: 'bash'
       scriptLocation: 'inlineScript'
       inlineScript: |
