@@ -14,10 +14,10 @@ steps:
     inlineScript: |
       set -euo pipefail
 
-      ACR_NAME="hmctsprod"
+      ACR_NAME="hmctspublic"
       OUTPUT_DIR="$(Build.SourcesDirectory)/acr-reports"
-      REPORT_FILE="$OUTPUT_DIR/acr-tag-report.csv"
-      DELETE_FILE="$OUTPUT_DIR/acr-delete-tags.csv"
+      REPORT_FILE="$OUTPUT_DIR/acr-tag-report-hmctspublic.csv"
+      DELETE_FILE="$OUTPUT_DIR/acr-delete-tags-hmctspublic.csv"
 
       mkdir -p "$OUTPUT_DIR"
 
