@@ -17,7 +17,6 @@ steps:
       set -euo pipefail
 
       echo "Searching for del.txt in repo..."
-
       FILE=$(find "$(System.DefaultWorkingDirectory)" -type f -name "del.txt" | head -n 1)
 
       if [ -z "$FILE" ]; then
@@ -26,11 +25,10 @@ steps:
       fi
 
       echo "Found file: $FILE"
-      echo "Reading deletion list..."
       echo ""
 
-      # Skip header and process each line
-      tail -n +2 "$FILE" | while read -r ACR_NAME IMAGE_NAME; do
+      # Read tab-separated file, skip header
+      tail -n +2 "$FILE" | while IFS=$'\t' read -r ACR_NAME IMAGE_NAME; do
 
         # Skip blank lines
         if [ -z "${ACR_NAME:-}" ] || [ -z "${IMAGE_NAME:-}" ]; then
@@ -41,22 +39,36 @@ steps:
         echo "ACR Name   : $ACR_NAME"
         echo "Image/Tag  : $IMAGE_NAME"
 
-        echo "Checking if image exists..."
+        # Split repo and tag
+        REPO="${IMAGE_NAME%%:*}"
+        TAG="${IMAGE_NAME##*:}"
 
-        if az acr repository show \
+        echo "Repository : $REPO"
+        echo "Tag        : $TAG"
+        echo ""
+
+        echo "Checking if tag exists in ACR..."
+
+        if az acr repository show-tags \
           --name "$ACR_NAME" \
-          --image "$IMAGE_NAME" >/dev/null 2>&1; then
+          --repository "$REPO" \
+          --output tsv | grep -Fxq "$TAG"; then
 
-          echo "Deleting image: $IMAGE_NAME from $ACR_NAME"
+          echo "Tag found. Deleting..."
 
           az acr repository delete \
             --name "$ACR_NAME" \
             --image "$IMAGE_NAME" \
             --yes
 
-          echo "Deleted: $ACR_NAME / $IMAGE_NAME"
+          echo "Deleted successfully: $ACR_NAME / $IMAGE_NAME"
         else
-          echo "Image not found: $ACR_NAME / $IMAGE_NAME"
+          echo "Tag NOT found in ACR: $ACR_NAME / $IMAGE_NAME"
+          echo "Available similar tags:"
+          az acr repository show-tags \
+            --name "$ACR_NAME" \
+            --repository "$REPO" \
+            --output table | grep "pr-46" || true
         fi
 
         echo ""
