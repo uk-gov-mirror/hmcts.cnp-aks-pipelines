@@ -8,7 +8,7 @@ steps:
 - checkout: self
 
 - task: AzureCLI@2
-  displayName: "Delete ACR images from del.txt"
+  displayName: "Find del.txt and delete ACR images"
   inputs:
     azureSubscription: "azurerm-prod"
     scriptType: "bash"
@@ -16,17 +16,20 @@ steps:
     inlineScript: |
       set -euo pipefail
 
-      FILE="del.txt"
+      echo "Searching for del.txt in repo..."
 
-      if [ ! -f "$FILE" ]; then
-        echo "ERROR: File $FILE not found in repo"
-        exit 1
+      FILE=$(find "$(System.DefaultWorkingDirectory)" -type f -name "del.txt" | head -n 1)
+
+      if [ -z "$FILE" ]; then
+        echo "No del.txt file found in the repo. Nothing to delete."
+        exit 0
       fi
 
-      echo "Reading deletion list from $FILE..."
+      echo "Found file: $FILE"
+      echo "Reading deletion list..."
       echo ""
 
-      # Skip header and process file
+      # Skip header and process each line
       tail -n +2 "$FILE" | while read -r ACR_NAME IMAGE_NAME; do
 
         # Skip blank lines
@@ -37,15 +40,26 @@ steps:
         echo "----------------------------------------"
         echo "ACR Name   : $ACR_NAME"
         echo "Image/Tag  : $IMAGE_NAME"
-        echo "Deleting..."
 
-        az acr repository delete \
+        echo "Checking if image exists..."
+
+        if az acr repository show \
           --name "$ACR_NAME" \
-          --image "$IMAGE_NAME" \
-          --yes
+          --image "$IMAGE_NAME" >/dev/null 2>&1; then
 
-        echo "Deleted: $ACR_NAME / $IMAGE_NAME"
+          echo "Deleting image: $IMAGE_NAME from $ACR_NAME"
+
+          az acr repository delete \
+            --name "$ACR_NAME" \
+            --image "$IMAGE_NAME" \
+            --yes
+
+          echo "Deleted: $ACR_NAME / $IMAGE_NAME"
+        else
+          echo "Image not found: $ACR_NAME / $IMAGE_NAME"
+        fi
+
         echo ""
       done
 
-      echo "All deletions completed."
+      echo "ACR cleanup completed."
