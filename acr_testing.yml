@@ -120,8 +120,11 @@ steps:
 - task: PublishPipelineArtifact@1
   displayName: "Publish both CSVs"
   inputs:
-    targetPath: |
-      acr-tag-report.csv
-      acr-delete-tags.csv
-    artifact: "acr-csv-reports"
-    publishLocation: "pipeline"
+    targetPath: '$(Build.SourcesDirectory)/acr-tag-report.csv'
+    artifact: 'acr-csv-reports'
+
+- task: PublishPipelineArtifact@1
+  displayName: "Publish delete CSV"
+  inputs:
+    targetPath: '$(Build.SourcesDirectory)/acr-delete-tags.csv'
+    artifact: 'acr-csv-reports'
