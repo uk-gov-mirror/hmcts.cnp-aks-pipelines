@@ -6,7 +6,7 @@ pool:
 
 steps:
 - task: AzureCLI@2
-  displayName: "Find ACR repos with tags older than 14 days"
+  displayName: "Find ACR tags matching retention rules and export CSV"
   inputs:
     azureSubscription: "azurerm-prod"
     scriptType: "bash"
@@ -15,39 +15,119 @@ steps:
       set -euo pipefail
 
       ACR_NAME="hmctsprod"
-      DAYS_OLD=14
-      CUTOFF_DATE=$(date -u -d "$DAYS_OLD days ago" +"%Y-%m-%dT%H:%M:%SZ")
+      OUTPUT_FILE="acr_old_tags.csv"
 
-      echo "Checking ACR: $ACR_NAME"
-      echo "Cutoff date: $CUTOFF_DATE"
+      echo "acr_name,filename,date" > "$OUTPUT_FILE"
+
+      NOW_EPOCH=$(date -u +%s)
+
+      echo "Scanning ACR: $ACR_NAME"
+      echo "Output file: $OUTPUT_FILE"
       echo ""
 
       repos=$(az acr repository list --name "$ACR_NAME" -o tsv)
 
-      found_old_repos=false
-
       for repo in $repos; do
         echo "Checking repository: $repo"
 
-        old_tags=$(az acr repository show-tags \
+        # Get tags with timestamps sorted newest first
+        az acr repository show-tags \
           --name "$ACR_NAME" \
           --repository "$repo" \
           --detail \
-          --output json | jq -r --arg cutoff "$CUTOFF_DATE" '
-            .[] | select(.lastUpdateTime < $cutoff) | .name
-          ' || true)
+          --orderby time_desc \
+          --output json > tags.json
 
-        if [[ -n "$old_tags" ]]; then
-          found_old_repos=true
-          echo "=========================================="
-          echo "Repository with tags older than $DAYS_OLD days: $repo"
-          echo "Old tags:"
-          echo "$old_tags"
-          echo "=========================================="
-          echo ""
+        # ---------- Rule 1 ----------
+        # olderThan: 5d
+        # keep: 5
+        # repoTagFilters:
+        # - .*:^prod.*
+        mapfile -t prod_matches < <(jq -r --arg repo "$repo" '
+          .[] | select(.name | test("^prod")) | "\($repo):\(.name),\(.lastUpdateTime)"
+        ' tags.json)
+
+        if [[ ${#prod_matches[@]} -gt 5 ]]; then
+          for entry in "${prod_matches[@]:5}"; do
+            tag_date=$(echo "$entry" | cut -d',' -f2)
+            tag_epoch=$(date -u -d "$tag_date" +%s)
+            age_days=$(( (NOW_EPOCH - tag_epoch) / 86400 ))
+            if [[ $age_days -gt 5 ]]; then
+              echo "$ACR_NAME,$entry" >> "$OUTPUT_FILE"
+            fi
+          done
         fi
+
+        # ---------- Rule 2 ----------
+        # olderThan: 2d
+        # keep: 2
+        # repoTagFilters:
+        # - .*:^staging-.*
+        mapfile -t staging_matches < <(jq -r --arg repo "$repo" '
+          .[] | select(.name | test("^staging-")) | "\($repo):\(.name),\(.lastUpdateTime)"
+        ' tags.json)
+
+        if [[ ${#staging_matches[@]} -gt 2 ]]; then
+          for entry in "${staging_matches[@]:2}"; do
+            tag_date=$(echo "$entry" | cut -d',' -f2)
+            tag_epoch=$(date -u -d "$tag_date" +%s)
+            age_days=$(( (NOW_EPOCH - tag_epoch) / 86400 ))
+            if [[ $age_days -gt 2 ]]; then
+              echo "$ACR_NAME,$entry" >> "$OUTPUT_FILE"
+            fi
+          done
+        fi
+
+        # ---------- Rule 3 ----------
+        # olderThan: 14d
+        # keep: 1
+        # repoTagFilters:
+        # - .*:^pr-.*
+        mapfile -t pr_matches < <(jq -r --arg repo "$repo" '
+          .[] | select(.name | test("^pr-")) | "\($repo):\(.name),\(.lastUpdateTime)"
+        ' tags.json)
+
+        if [[ ${#pr_matches[@]} -gt 1 ]]; then
+          for entry in "${pr_matches[@]:1}"; do
+            tag_date=$(echo "$entry" | cut -d',' -f2)
+            tag_epoch=$(date -u -d "$tag_date" +%s)
+            age_days=$(( (NOW_EPOCH - tag_epoch) / 86400 ))
+            if [[ $age_days -gt 14 ]]; then
+              echo "$ACR_NAME,$entry" >> "$OUTPUT_FILE"
+            fi
+          done
+        fi
+
+        # ---------- Rule 4 ----------
+        # olderThan: 14d
+        # keep: 0
+        # repoTagFilters:
+        # - ^labs/.*:.*
+        if [[ "$repo" =~ ^labs/.* ]]; then
+          mapfile -t labs_matches < <(jq -r --arg repo "$repo" '
+            .[] | "\($repo):\(.name),\(.lastUpdateTime)"
+          ' tags.json)
+
+          for entry in "${labs_matches[@]}"; do
+            tag_date=$(echo "$entry" | cut -d',' -f2)
+            tag_epoch=$(date -u -d "$tag_date" +%s)
+            age_days=$(( (NOW_EPOCH - tag_epoch) / 86400 ))
+            if [[ $age_days -gt 14 ]]; then
+              echo "$ACR_NAME,$entry" >> "$OUTPUT_FILE"
+            fi
+          done
+        fi
+
+        rm -f tags.json
       done
 
-      if [[ "$found_old_repos" == false ]]; then
-        echo "No repositories found with tags older than $DAYS_OLD days."
-      fi
+      echo ""
+      echo "CSV generated:"
+      cat "$OUTPUT_FILE"
+
+- task: PublishPipelineArtifact@1
+  displayName: "Publish CSV report"
+  inputs:
+    targetPath: "acr_old_tags.csv"
+    artifact: "acr-tag-report"
+    publishLocation: "pipeline"
