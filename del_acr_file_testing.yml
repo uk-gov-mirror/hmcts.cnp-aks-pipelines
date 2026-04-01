@@ -156,7 +156,6 @@ steps:
           echo "Expected format: acr-name.azurecr.io/repository:tag"
           exit 1
         fi
-    displayName: 'Delete image from ACR'
 
   - script: |
       echo "=========================================="
