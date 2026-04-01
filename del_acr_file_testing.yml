@@ -15,11 +15,14 @@ steps:
       inlineScript: |
         #!/bin/bash
         
+        # Enable debug mode
+        set -x
+        
         # Define the image to delete
         IMAGE="hmctssbox.azurecr.io/crumble/recipe-backend:pr-1266-5b225da-20260216130151"
         
         echo "=========================================="
-        echo "ACR Image Deletion Process"
+        echo "ACR Image Deletion Process with Debugging"
         echo "=========================================="
         echo "Target image: $IMAGE"
         echo ""
@@ -36,131 +39,162 @@ steps:
           echo ""
           
           # Check if repository exists
-          echo "🔎 Checking if image exists..."
-          
+          echo "🔎 Step 1: Checking if repository exists..."
           if az acr repository show --name "$acr_name" --repository "$repo" --output none 2>/dev/null; then
             echo "✅ Repository exists"
             
-            # Check if the specific tag exists
-            if az acr repository show-tags \
+            # Check if the specific tag exists BEFORE deletion
+            echo ""
+            echo "🔎 Step 2: Checking if tag exists BEFORE deletion..."
+            tag_exists_before=$(az acr repository show-tags \
               --name "$acr_name" \
               --repository "$repo" \
               --query "contains([], '$tag')" \
-              --output tsv 2>/dev/null | grep -q "true"; then
-              
+              --output tsv 2>/dev/null)
+            
+            echo "Tag exists before deletion: $tag_exists_before"
+            
+            if [ "$tag_exists_before" == "true" ]; then
               echo "✅ Image found in ACR"
               echo ""
               
               # Get image digest before deletion
+              echo "🔎 Step 3: Getting image digest..."
               digest=$(az acr repository show-manifests \
                 --name "$acr_name" \
                 --repository "$repo" \
                 --query "[?tags[?contains(@, '$tag')]].digest" \
                 --output tsv 2>/dev/null)
               
-              echo "📋 Image Details:"
-              echo "   Full image: $IMAGE"
-              echo "   Digest: $digest"
+              echo "Image digest: $digest"
               echo ""
               
-              # Confirm deletion (remove this confirmation for automated deletion)
-              echo "⚠️  WARNING: You are about to delete this image from ACR"
-              echo "   Image: $IMAGE"
-              echo "   This action cannot be undone!"
-              echo ""
+              # Try multiple deletion methods
+              echo "🗑️  Step 4: Attempting deletion..."
               
-              # For automated pipelines, you can remove the confirmation
-              # and directly proceed with deletion
-              
-              # Option 1: Delete by tag
-              echo "🗑️  Deleting image by tag..."
-              az acr repository delete \
+              # Method 1: Delete by tag
+              echo "Method 1: Deleting by tag..."
+              delete_output=$(az acr repository delete \
                 --name "$acr_name" \
                 --image "${repo}:${tag}" \
                 --yes \
-                --output table
+                --output json 2>&1)
               
-              # Alternative Option 2: Delete by digest (more precise)
-              # if [ -n "$digest" ]; then
-              #   echo "🗑️  Deleting image by digest..."
-              #   az acr repository delete \
-              #     --name "$acr_name" \
-              #     --image "${repo}@${digest}" \
-              #     --yes \
-              #     --output table
-              # fi
-              
-              # Verify deletion
+              delete_exit_code=$?
+              echo "Delete command exit code: $delete_exit_code"
+              echo "Delete command output: $delete_output"
               echo ""
-              echo "🔎 Verifying deletion..."
-              if az acr repository show-tags \
+              
+              # Method 2: If digest is available, try deleting by digest
+              if [ -n "$digest" ] && [ "$digest" != "null" ]; then
+                echo "Method 2: Also trying to delete by digest (if still exists)..."
+                az acr repository delete \
+                  --name "$acr_name" \
+                  --image "${repo}@${digest}" \
+                  --yes \
+                  --output json 2>&1 || true
+                echo ""
+              fi
+              
+              # Wait a moment for deletion to propagate
+              echo "⏳ Waiting 5 seconds for deletion to propagate..."
+              sleep 5
+              
+              # Verify deletion using multiple methods
+              echo ""
+              echo "🔎 Step 5: Verifying deletion..."
+              
+              # Verification Method 1: Check tags
+              echo "Verification Method 1: Checking if tag still exists..."
+              tag_exists_after=$(az acr repository show-tags \
                 --name "$acr_name" \
                 --repository "$repo" \
                 --query "contains([], '$tag')" \
-                --output tsv 2>/dev/null | grep -q "true"; then
+                --output tsv 2>/dev/null)
+              
+              echo "Tag exists after deletion: $tag_exists_after"
+              
+              # Verification Method 2: Try to get manifest by digest
+              if [ -n "$digest" ] && [ "$digest" != "null" ]; then
+                echo ""
+                echo "Verification Method 2: Checking if digest still exists..."
+                manifest_exists=$(az acr repository show-manifests \
+                  --name "$acr_name" \
+                  --repository "$repo" \
+                  --query "[?digest=='$digest']" \
+                  --output tsv 2>/dev/null | wc -l)
                 
+                echo "Manifest entries with digest: $manifest_exists"
+              fi
+              
+              # Verification Method 3: List all remaining tags
+              echo ""
+              echo "Verification Method 3: Listing all remaining tags..."
+              remaining_tags=$(az acr repository show-tags \
+                --name "$acr_name" \
+                --repository "$repo" \
+                --output table 2>/dev/null)
+              
+              echo "Remaining tags:"
+              echo "$remaining_tags"
+              
+              # Determine if deletion was successful
+              if [ "$tag_exists_after" == "true" ]; then
+                echo ""
                 echo "❌ ERROR: Image still exists after deletion attempt!"
+                echo "Possible reasons:"
+                echo "  1. Insufficient permissions to delete images"
+                echo "  2. Image is being used by a running container"
+                echo "  3. Image has retention policies preventing deletion"
+                echo "  4. ACR is in a locked state"
+                echo "  5. Network issues during deletion"
+                echo ""
+                
+                # Check permissions
+                echo "🔍 Checking permissions..."
+                az acr repository show \
+                  --name "$acr_name" \
+                  --repository "$repo" \
+                  --output none 2>&1 || echo "Permission check failed"
+                
+                # Check if ACR has soft delete enabled
+                echo ""
+                echo "🔍 Checking if soft delete is enabled..."
+                az acr config soft-delete show \
+                  --registry "$acr_name" \
+                  --output table 2>/dev/null || echo "Soft delete status unknown"
+                
+                # Check for locks
+                echo ""
+                echo "🔍 Checking for locks on ACR..."
+                az lock list \
+                  --resource-group "$(az acr show --name $acr_name --query resourceGroup -o tsv 2>/dev/null)" \
+                  --resource "$acr_name" \
+                  --resource-type "Microsoft.ContainerRegistry/registries" \
+                  --output table 2>/dev/null || echo "No locks found or unable to check"
+                
                 exit 1
               else
+                echo ""
                 echo "✅✅✅ IMAGE SUCCESSFULLY DELETED ✅✅✅"
                 echo "   Image: $IMAGE"
                 echo "   Status: REMOVED from Azure Container Registry"
-                
-                # Check if repository is now empty
-                remaining_tags=$(az acr repository show-tags \
-                  --name "$acr_name" \
-                  --repository "$repo" \
-                  --output tsv 2>/dev/null | wc -l)
-                
-                if [ "$remaining_tags" -eq 0 ]; then
-                  echo ""
-                  echo "📝 Note: Repository '$repo' now has no tags"
-                  echo "   You may want to delete the empty repository if needed:"
-                  echo "   az acr repository delete --name $acr_name --repository $repo --yes"
-                fi
-                
                 exit 0
               fi
             else
               echo "❌❌❌ IMAGE NOT FOUND ❌❌❌"
               echo "   Image: $IMAGE"
               echo "   Status: NOT AVAILABLE in Azure Container Registry"
-              echo "   Reason: Tag '$tag' not found in repository '$repo'"
-              
-              # Show available tags
-              echo ""
-              echo "📋 Available tags in repository '$repo':"
-              az acr repository show-tags \
-                --name "$acr_name" \
-                --repository "$repo" \
-                --output table 2>/dev/null | head -20
-              
-              echo ""
-              echo "No action taken - image does not exist"
+              echo "   No action taken"
               exit 0
             fi
           else
             echo "❌ Repository does not exist"
-            echo ""
             echo "❌❌❌ IMAGE NOT FOUND ❌❌❌"
-            echo "   Image: $IMAGE"
-            echo "   Status: REPOSITORY NOT FOUND in Azure Container Registry"
-            echo "   Reason: Repository '$repo' does not exist in ACR '$acr_name'"
-            
-            echo ""
-            echo "No action taken - image does not exist"
             exit 0
           fi
         else
           echo "❌ Invalid image format: $IMAGE"
-          echo "Expected format: acr-name.azurecr.io/repository:tag"
           exit 1
         fi
-
-  - script: |
-      echo "=========================================="
-      echo "Deletion Process Complete"
-      echo "=========================================="
-      echo "Image: hmctspublic.azurecr.io/azure-devops-agent:pr-46-b8ab9fa5-1770913754"
-      echo "Status: Check logs above for deletion status"
-    displayName: 'Display completion status'
+    displayName: 'Delete image with debugging'
