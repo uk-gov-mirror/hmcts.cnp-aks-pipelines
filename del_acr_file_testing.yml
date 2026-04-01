@@ -6,8 +6,8 @@ pool:
 
 steps:
   - task: AzureCLI@2
-    name: CheckImagesInACR
-    displayName: 'Check if images exist in ACR'
+    name: CheckImageInACR
+    displayName: 'Check if specific image exists in ACR'
     inputs:
       azureSubscription: 'azurerm-prod'
       scriptType: 'bash'
@@ -15,105 +15,94 @@ steps:
       inlineScript: |
         #!/bin/bash
         
-        # Read the del.txt file
-        DEL_FILE="del.txt"
+        # Define the image to check
+        IMAGE="hmctspublic.azurecr.io/azure-devops-agent:pr-46-b8ab9fa5-1770913754"
         
-        # Check if file exists
-        if [ ! -f "$DEL_FILE" ]; then
-          echo "Error: $DEL_FILE not found!"
-          exit 1
-        fi
+        echo "=========================================="
+        echo "Checking if image exists in ACR"
+        echo "=========================================="
+        echo "Image: $IMAGE"
+        echo ""
         
-        # Skip header line and process each line
-        tail -n +2 "$DEL_FILE" | while IFS=$'\t' read -r acr_name image_name; do
-          # Skip empty lines
-          if [ -z "$acr_name" ] || [ -z "$image_name" ]; then
-            continue
-          fi
+        # Parse the ACR image
+        if [[ "$IMAGE" =~ ^([^/]+)\.azurecr\.io/(.+):(.+)$ ]]; then
+          acr_name="${BASH_REMATCH[1]}"
+          repo="${BASH_REMATCH[2]}"
+          tag="${BASH_REMATCH[3]}"
           
-          # Trim whitespace
-          acr_name=$(echo "$acr_name" | xargs)
-          image_name=$(echo "$image_name" | xargs)
+          echo "🔍 ACR Name: $acr_name"
+          echo "🔍 Repository: $repo"
+          echo "🔍 Tag: $tag"
+          echo ""
           
-          echo "=========================================="
-          echo "Checking: $acr_name / $image_name"
-          echo "=========================================="
+          echo "🔎 Checking image existence..."
           
-          # Split image_name into repo and tag
-          IFS=':' read -r repo tag <<< "$image_name"
-          
-          if [ -z "$repo" ] || [ -z "$tag" ]; then
-            echo "⚠️  Invalid image format: $image_name (expected repo:tag)"
-            echo "FOUND_STATUS=INVALID_FORMAT"
-            echo "IMAGE_STATUS=invalid"
-            continue
-          fi
-          
-          # Full image reference
-          full_image="${acr_name}.azurecr.io/${repo}:${tag}"
-          
-          echo "Full image: $full_image"
-          
-          # Check if image exists in ACR
-          if az acr repository show-tags \
-            --name "$acr_name" \
-            --repository "$repo" \
-            --query "contains([], '$tag')" \
-            --output tsv 2>/dev/null | grep -q "true"; then
+          # Check if repository exists
+          if az acr repository show --name "$acr_name" --repository "$repo" --output none 2>/dev/null; then
+            echo "✅ Repository exists"
             
-            # Alternative method: Try to get image manifest
-            if az acr repository show-manifests \
+            # Check if the specific tag exists
+            if az acr repository show-tags \
               --name "$acr_name" \
               --repository "$repo" \
-              --query "[?tags[?contains(@, '$tag')]]" \
-              --output tsv 2>/dev/null | grep -q "$tag"; then
+              --query "contains([], '$tag')" \
+              --output tsv 2>/dev/null | grep -q "true"; then
               
-              echo "✅ IMAGE FOUND: $full_image"
-              echo "FOUND_STATUS=FOUND"
-              echo "IMAGE_STATUS=found"
+              echo ""
+              echo "✅✅✅ IMAGE FOUND! ✅✅✅"
+              echo "Image: $IMAGE"
+              echo "Status: AVAILABLE in Azure Container Registry"
               
-              # Get image details
-              echo "Image details:"
-              az acr repository show \
+              # Get image digest
+              digest=$(az acr repository show-manifests \
                 --name "$acr_name" \
                 --repository "$repo" \
-                --query "[?tags[?contains(@, '$tag')]]" \
-                --output table 2>/dev/null || true
+                --query "[?tags[?contains(@, '$tag')]].digest" \
+                --output tsv 2>/dev/null)
+              
+              echo "Digest: $digest"
+              echo ""
+              echo "✅ RESULT: IMAGE EXISTS"
+              exit 0
             else
-              echo "❌ IMAGE NOT FOUND: $full_image"
-              echo "FOUND_STATUS=NOT_FOUND"
-              echo "IMAGE_STATUS=not_found"
-            fi
-          else
-            echo "❌ IMAGE NOT FOUND: $full_image"
-            echo "FOUND_STATUS=NOT_FOUND"
-            echo "IMAGE_STATUS=not_found"
-            
-            # Check if repository exists at all
-            if az acr repository show --name "$acr_name" --repository "$repo" &>/dev/null; then
-              echo "Repository '$repo' exists but tag '$tag' not found"
-              echo "Available tags for this repository:"
+              echo ""
+              echo "❌❌❌ IMAGE NOT FOUND ❌❌❌"
+              echo "Image: $IMAGE"
+              echo "Status: NOT AVAILABLE in Azure Container Registry"
+              echo "Reason: Repository exists but tag '$tag' not found"
+              
+              # Show available tags
+              echo ""
+              echo "Available tags in repository '$repo':"
               az acr repository show-tags \
                 --name "$acr_name" \
                 --repository "$repo" \
-                --output table || true
-            else
-              echo "Repository '$repo' does not exist in ACR"
+                --output table | head -20
+              
+              echo ""
+              echo "❌ RESULT: IMAGE NOT FOUND"
+              exit 1
             fi
+          else
+            echo "❌ Repository does not exist"
+            echo ""
+            echo "❌❌❌ IMAGE NOT FOUND ❌❌❌"
+            echo "Image: $IMAGE"
+            echo "Status: REPOSITORY NOT FOUND in Azure Container Registry"
+            echo "Reason: Repository '$repo' does not exist in ACR '$acr_name'"
+            
+            # List available repositories
+            echo ""
+            echo "Available repositories in ACR '$acr_name':"
+            az acr repository list --name "$acr_name" --output table | head -20
+            
+            echo ""
+            echo "❌ RESULT: IMAGE NOT FOUND"
+            exit 1
           fi
-          
-          echo ""
-          
-          # Set pipeline variable for this image (optional)
-          echo "##vso[task.setvariable variable=IMAGE_${repo//[-\/]/_}_STATUS]${FOUND_STATUS}"
-        done
-        
-        echo "=========================================="
-        echo "Image check completed"
-        echo "=========================================="
-
-  - script: |
-      echo "Image check completed. Check the logs above for details."
-      echo "You can also use the following variables in subsequent steps:"
-      env | grep "IMAGE_.*_STATUS" || echo "No image status variables set"
-    displayName: 'Display check results'
+        else
+          echo "❌ Invalid image format: $IMAGE"
+          echo "Expected format: acr-name.azurecr.io/repository:tag"
+          exit 1
+        fi
+    displayName: 'Check image existence'
