@@ -6,7 +6,7 @@ pool:
 
 steps:
 - task: AzureCLI@2
-  displayName: "Find ACR tags matching retention rules and export CSV"
+  displayName: "Find ACR tags and deletion candidates"
   inputs:
     azureSubscription: "azurerm-prod"
     scriptType: "bash"
@@ -15,14 +15,17 @@ steps:
       set -euo pipefail
 
       ACR_NAME="hmctsprod"
-      OUTPUT_FILE="acr_old_tags.csv"
+      REPORT_FILE="acr-tag-report.csv"
+      DELETE_FILE="acr-delete-tags.csv"
 
-      echo "acr_name,filename,date" > "$OUTPUT_FILE"
+      echo "acr_name,filename,date" > "$REPORT_FILE"
+      echo "acr_name,filename,date" > "$DELETE_FILE"
 
       NOW_EPOCH=$(date -u +%s)
 
       echo "Scanning ACR: $ACR_NAME"
-      echo "Output file: $OUTPUT_FILE"
+      echo "Report CSV: $REPORT_FILE"
+      echo "Delete CSV: $DELETE_FILE"
       echo ""
 
       repos=$(az acr repository list --name "$ACR_NAME" -o tsv)
@@ -40,47 +43,53 @@ steps:
 
         # ---------- Rule 1: prod ----------
         mapfile -t prod_matches < <(jq -r '.[] | select(.name | test("^prod")) | "\(.name),\(.lastUpdateTime)"' tags.json)
-        if [[ ${#prod_matches[@]} -gt 5 ]]; then
-          for entry in "${prod_matches[@]:5}"; do
-            tag_name=$(echo "$entry" | cut -d',' -f1)
-            tag_date=$(echo "$entry" | cut -d',' -f2)
+        for i in "${!prod_matches[@]}"; do
+          tag_name=$(echo "${prod_matches[$i]}" | cut -d',' -f1)
+          tag_date=$(echo "${prod_matches[$i]}" | cut -d',' -f2)
+          echo "$ACR_NAME,$repo:$tag_name,$tag_date" >> "$REPORT_FILE"
+
+          # Only save to delete CSV if beyond newest 5 & older than 5d
+          if [[ $i -ge 5 ]]; then
             tag_epoch=$(date -u -d "$tag_date" +%s)
             age_days=$(( (NOW_EPOCH - tag_epoch) / 86400 ))
             if [[ $age_days -gt 5 ]]; then
-              echo "$ACR_NAME,$repo:$tag_name,$tag_date" >> "$OUTPUT_FILE"
+              echo "$ACR_NAME,$repo:$tag_name,$tag_date" >> "$DELETE_FILE"
             fi
-          done
-        fi
+          fi
+        done
 
         # ---------- Rule 2: staging ----------
         mapfile -t staging_matches < <(jq -r '.[] | select(.name | test("^staging-")) | "\(.name),\(.lastUpdateTime)"' tags.json)
-        if [[ ${#staging_matches[@]} -gt 2 ]]; then
-          for entry in "${staging_matches[@]:2}"; do
-            tag_name=$(echo "$entry" | cut -d',' -f1)
-            tag_date=$(echo "$entry" | cut -d',' -f2)
+        for i in "${!staging_matches[@]}"; do
+          tag_name=$(echo "${staging_matches[$i]}" | cut -d',' -f1)
+          tag_date=$(echo "${staging_matches[$i]}" | cut -d',' -f2)
+          echo "$ACR_NAME,$repo:$tag_name,$tag_date" >> "$REPORT_FILE"
+
+          if [[ $i -ge 2 ]]; then
             tag_epoch=$(date -u -d "$tag_date" +%s)
             age_days=$(( (NOW_EPOCH - tag_epoch) / 86400 ))
             if [[ $age_days -gt 2 ]]; then
-              echo "$ACR_NAME,$repo:$tag_name,$tag_date" >> "$OUTPUT_FILE"
+              echo "$ACR_NAME,$repo:$tag_name,$tag_date" >> "$DELETE_FILE"
             fi
-          done
-        fi
+          fi
+        done
 
         # ---------- Rule 3: pr- ----------
         mapfile -t pr_matches < <(jq -r '.[] | select(.name | test("^pr-")) | "\(.name),\(.lastUpdateTime)"' tags.json)
-        if [[ ${#pr_matches[@]} -gt 1 ]]; then
-          # Only save tags beyond the newest 1
-          for entry in "${pr_matches[@]:1}"; do
-            tag_name=$(echo "$entry" | cut -d',' -f1)
-            tag_date=$(echo "$entry" | cut -d',' -f2)
+        for i in "${!pr_matches[@]}"; do
+          tag_name=$(echo "${pr_matches[$i]}" | cut -d',' -f1)
+          tag_date=$(echo "${pr_matches[$i]}" | cut -d',' -f2)
+          echo "$ACR_NAME,$repo:$tag_name,$tag_date" >> "$REPORT_FILE"
+
+          # Only save to delete CSV if more than 1 pr- tag exists and beyond the newest 1
+          if [[ ${#pr_matches[@]} -gt 1 && $i -ge 1 ]]; then
             tag_epoch=$(date -u -d "$tag_date" +%s)
             age_days=$(( (NOW_EPOCH - tag_epoch) / 86400 ))
             if [[ $age_days -gt 14 ]]; then
-              echo "$ACR_NAME,$repo:$tag_name,$tag_date" >> "$OUTPUT_FILE"
+              echo "$ACR_NAME,$repo:$tag_name,$tag_date" >> "$DELETE_FILE"
             fi
-          done
-        fi
-        # If only 1 pr- tag, do nothing (skip) — meets your requirement
+          fi
+        done
 
         # ---------- Rule 4: labs ----------
         if [[ "$repo" =~ ^labs/.* ]]; then
@@ -88,10 +97,12 @@ steps:
           for entry in "${labs_matches[@]}"; do
             tag_name=$(echo "$entry" | cut -d',' -f1)
             tag_date=$(echo "$entry" | cut -d',' -f2)
+            echo "$ACR_NAME,$repo:$tag_name,$tag_date" >> "$REPORT_FILE"
+
             tag_epoch=$(date -u -d "$tag_date" +%s)
             age_days=$(( (NOW_EPOCH - tag_epoch) / 86400 ))
             if [[ $age_days -gt 14 ]]; then
-              echo "$ACR_NAME,$repo:$tag_name,$tag_date" >> "$OUTPUT_FILE"
+              echo "$ACR_NAME,$repo:$tag_name,$tag_date" >> "$DELETE_FILE"
             fi
           done
         fi
@@ -100,12 +111,17 @@ steps:
       done
 
       echo ""
-      echo "CSV generated:"
-      cat "$OUTPUT_FILE"
+      echo "Report CSV generated:"
+      cat "$REPORT_FILE"
+      echo ""
+      echo "Delete candidates CSV generated:"
+      cat "$DELETE_FILE"
 
 - task: PublishPipelineArtifact@1
-  displayName: "Publish CSV report"
+  displayName: "Publish both CSVs"
   inputs:
-    targetPath: "acr_old_tags.csv"
-    artifact: "acr-tag-report"
+    targetPath: |
+      acr-tag-report.csv
+      acr-delete-tags.csv
+    artifact: "acr-csv-reports"
     publishLocation: "pipeline"
