@@ -39,7 +39,7 @@ parameters:
         keep: 2
         repoTagFilters: [".*:^staging-.*"]
       - olderThan: "14d"
-        keep: 1
+        keep: 2
         repoTagFilters: [".*:^pr-.*"]
       - olderThan: "14d"
         keep: 0
