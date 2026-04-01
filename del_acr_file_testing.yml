@@ -16,7 +16,7 @@ steps:
         #!/bin/bash
         
         # Define the image to delete
-        IMAGE="hmctspublic.azurecr.io/azure-devops-agent:pr-46-b8ab9fa5-1770913754"
+        IMAGE="hmctssbox.azurecr.io/crumble/recipe-backend:pr-1266-5b225da-20260216130151"
         
         echo "=========================================="
         echo "ACR Image Deletion Process"
