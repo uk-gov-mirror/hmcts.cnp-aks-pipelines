@@ -15,8 +15,11 @@ steps:
       set -euo pipefail
 
       ACR_NAME="hmctsprod"
-      REPORT_FILE="acr-tag-report.csv"
-      DELETE_FILE="acr-delete-tags.csv"
+      OUTPUT_DIR="$(Build.SourcesDirectory)/acr-reports"
+      REPORT_FILE="$OUTPUT_DIR/acr-tag-report.csv"
+      DELETE_FILE="$OUTPUT_DIR/acr-delete-tags.csv"
+
+      mkdir -p "$OUTPUT_DIR"
 
       echo "acr_name,filename,date" > "$REPORT_FILE"
       echo "acr_name,filename,date" > "$DELETE_FILE"
@@ -48,7 +51,6 @@ steps:
           tag_date=$(echo "${prod_matches[$i]}" | cut -d',' -f2)
           echo "$ACR_NAME,$repo:$tag_name,$tag_date" >> "$REPORT_FILE"
 
-          # Only save to delete CSV if beyond newest 5 & older than 5d
           if [[ $i -ge 5 ]]; then
             tag_epoch=$(date -u -d "$tag_date" +%s)
             age_days=$(( (NOW_EPOCH - tag_epoch) / 86400 ))
@@ -111,6 +113,9 @@ steps:
       done
 
       echo ""
+      echo "Generated files:"
+      ls -l "$OUTPUT_DIR"
+      echo ""
       echo "Report CSV generated:"
       cat "$REPORT_FILE"
       echo ""
@@ -118,13 +123,8 @@ steps:
       cat "$DELETE_FILE"
 
 - task: PublishPipelineArtifact@1
-  displayName: "Publish both CSVs"
+  displayName: "Publish ACR CSV reports"
   inputs:
-    targetPath: '$(Build.SourcesDirectory)/acr-tag-report.csv'
+    targetPath: '$(Build.SourcesDirectory)/acr-reports'
     artifact: 'acr-csv-reports'
-
-- task: PublishPipelineArtifact@1
-  displayName: "Publish delete CSV"
-  inputs:
-    targetPath: '$(Build.SourcesDirectory)/acr-delete-tags.csv'
-    artifact: 'acr-csv-reports'
+    publishLocation: 'pipeline'
