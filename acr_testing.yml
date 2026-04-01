@@ -38,82 +38,59 @@ steps:
           --orderby time_desc \
           --output json > tags.json
 
-        # ---------- Rule 1 ----------
-        # olderThan: 5d
-        # keep: 5
-        # repoTagFilters:
-        # - .*:^prod.*
-        mapfile -t prod_matches < <(jq -r --arg repo "$repo" '
-          .[] | select(.name | test("^prod")) | "\($repo):\(.name),\(.lastUpdateTime)"
-        ' tags.json)
-
+        # ---------- Rule 1: prod ----------
+        mapfile -t prod_matches < <(jq -r '.[] | select(.name | test("^prod")) | "\(.name),\(.lastUpdateTime)"' tags.json)
         if [[ ${#prod_matches[@]} -gt 5 ]]; then
           for entry in "${prod_matches[@]:5}"; do
+            tag_name=$(echo "$entry" | cut -d',' -f1)
             tag_date=$(echo "$entry" | cut -d',' -f2)
             tag_epoch=$(date -u -d "$tag_date" +%s)
             age_days=$(( (NOW_EPOCH - tag_epoch) / 86400 ))
             if [[ $age_days -gt 5 ]]; then
-              echo "$ACR_NAME,$entry" >> "$OUTPUT_FILE"
+              echo "$ACR_NAME,$repo:$tag_name,$tag_date" >> "$OUTPUT_FILE"
             fi
           done
         fi
 
-        # ---------- Rule 2 ----------
-        # olderThan: 2d
-        # keep: 2
-        # repoTagFilters:
-        # - .*:^staging-.*
-        mapfile -t staging_matches < <(jq -r --arg repo "$repo" '
-          .[] | select(.name | test("^staging-")) | "\($repo):\(.name),\(.lastUpdateTime)"
-        ' tags.json)
-
+        # ---------- Rule 2: staging ----------
+        mapfile -t staging_matches < <(jq -r '.[] | select(.name | test("^staging-")) | "\(.name),\(.lastUpdateTime)"' tags.json)
         if [[ ${#staging_matches[@]} -gt 2 ]]; then
           for entry in "${staging_matches[@]:2}"; do
+            tag_name=$(echo "$entry" | cut -d',' -f1)
             tag_date=$(echo "$entry" | cut -d',' -f2)
             tag_epoch=$(date -u -d "$tag_date" +%s)
             age_days=$(( (NOW_EPOCH - tag_epoch) / 86400 ))
             if [[ $age_days -gt 2 ]]; then
-              echo "$ACR_NAME,$entry" >> "$OUTPUT_FILE"
+              echo "$ACR_NAME,$repo:$tag_name,$tag_date" >> "$OUTPUT_FILE"
             fi
           done
         fi
 
-        # ---------- Rule 3 ----------
-        # olderThan: 14d
-        # keep: 1
-        # repoTagFilters:
-        # - .*:^pr-.*
-        mapfile -t pr_matches < <(jq -r --arg repo "$repo" '
-          .[] | select(.name | test("^pr-")) | "\($repo):\(.name),\(.lastUpdateTime)"
-        ' tags.json)
-
+        # ---------- Rule 3: pr- ----------
+        mapfile -t pr_matches < <(jq -r '.[] | select(.name | test("^pr-")) | "\(.name),\(.lastUpdateTime)"' tags.json)
         if [[ ${#pr_matches[@]} -gt 1 ]]; then
+          # Skip the newest 1
           for entry in "${pr_matches[@]:1}"; do
+            tag_name=$(echo "$entry" | cut -d',' -f1)
             tag_date=$(echo "$entry" | cut -d',' -f2)
             tag_epoch=$(date -u -d "$tag_date" +%s)
             age_days=$(( (NOW_EPOCH - tag_epoch) / 86400 ))
             if [[ $age_days -gt 14 ]]; then
-              echo "$ACR_NAME,$entry" >> "$OUTPUT_FILE"
+              echo "$ACR_NAME,$repo:$tag_name,$tag_date" >> "$OUTPUT_FILE"
             fi
           done
         fi
 
-        # ---------- Rule 4 ----------
-        # olderThan: 14d
-        # keep: 0
-        # repoTagFilters:
-        # - ^labs/.*:.*
+        # ---------- Rule 4: labs ----------
         if [[ "$repo" =~ ^labs/.* ]]; then
-          mapfile -t labs_matches < <(jq -r --arg repo "$repo" '
-            .[] | "\($repo):\(.name),\(.lastUpdateTime)"
-          ' tags.json)
-
+          mapfile -t labs_matches < <(jq -r '.[] | "\(.name),\(.lastUpdateTime)"' tags.json)
           for entry in "${labs_matches[@]}"; do
+            tag_name=$(echo "$entry" | cut -d',' -f1)
             tag_date=$(echo "$entry" | cut -d',' -f2)
             tag_epoch=$(date -u -d "$tag_date" +%s)
             age_days=$(( (NOW_EPOCH - tag_epoch) / 86400 ))
             if [[ $age_days -gt 14 ]]; then
-              echo "$ACR_NAME,$entry" >> "$OUTPUT_FILE"
+              echo "$ACR_NAME,$repo:$tag_name,$tag_date" >> "$OUTPUT_FILE"
             fi
           done
         fi
