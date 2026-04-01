@@ -36,24 +36,30 @@ run_cleanup_with_retry() {
     local max_retries=3
     local retry_delay=30  # seconds
     local attempt=1
-    local temp_log=$(mktemp)
+    local temp_log
+    temp_log=$(mktemp)
     local last_output=""
-    
+    local purge_cmd="acr purge --registry \$RegistryName ${filter_args} --ago ${older_than} --keep ${keep_min_latest_num} --untagged --concurrency 5"
+
     # Cleanup temp file on exit
-    trap "rm -f $temp_log" EXIT
-    
+    trap "rm -f \"$temp_log\"" EXIT
+
     while [ $attempt -le $max_retries ]; do
         echo "$(TERM=xterm tput setaf 6)Attempt $attempt of $max_retries..."
-        
-        # Run the command and capture output to temp file
-        # Note: az acr run output goes to the task logs, but we can check exit code
+        echo "$(TERM=xterm tput setaf 6)Starting az acr run (streaming output; also saved for error handling):"
+        echo "  registry=$registry"
+        echo "  timeout=10800s"
+        echo "  cmd=$purge_cmd"
+        echo "$(TERM=xterm tput sgr0)---"
+        # Stream CLI output to the terminal and capture the same stream for retries/errors
         set +e
         az acr run --registry "$registry" \
-            --cmd "acr purge --registry \$RegistryName ${filter_args} --ago ${older_than} --keep ${keep_min_latest_num} --untagged --concurrency 5" \
-            --timeout 10800 /dev/null > "$temp_log" 2>&1
+            --cmd "$purge_cmd" \
+            --timeout 10800 /dev/null 2>&1 | tee "$temp_log"
         exit_code=$?
         last_output=$(cat "$temp_log" 2>/dev/null || echo "")
         set -e
+        echo "$(TERM=xterm tput setaf 6)--- (exit code: $exit_code)"
         
         # If successful, return
         if [ $exit_code -eq 0 ]; then
