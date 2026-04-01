@@ -1,96 +1,119 @@
-# File: azure-pipelines.yml
 trigger: none
 pr: none
 
 pool:
   vmImage: 'ubuntu-latest'
 
-variables:
-  # Azure Service Connection for ACR
-  azureServiceConnection: 'azurerm-prod'
-
 steps:
-
-# =============================
-# Step 1: Checkout Repo
-# =============================
-- checkout: self
-  displayName: "Checkout repository"
-
-# =============================
-# Step 2: Find del.txt
-# =============================
-- script: |
-    set -euo pipefail
-
-    echo "Searching for del.txt in repo..."
-    DEL_FILE=$(find $(System.DefaultWorkingDirectory) -type f -name "del.txt" | head -n 1)
-
-    if [[ -z "$DEL_FILE" ]]; then
-        echo "ERROR: del.txt not found in repo!"
-        exit 1
-    fi
-
-    echo "Found file: $DEL_FILE"
-    echo "##vso[task.setvariable variable=DEL_FILE_PATH]$DEL_FILE"
-  displayName: "Locate del.txt"
-
-# =============================
-# Step 3: Delete images from ACR
-# =============================
-- task: AzureCLI@2
-  displayName: "Delete ACR images from del.txt"
-  inputs:
-    azureSubscription: $(azureServiceConnection)
-    scriptType: bash
-    scriptLocation: inlineScript
-    inlineScript: |
-      set -euo pipefail
-
-      DEL_FILE="$DEL_FILE_PATH"
-
-      echo "========================================"
-      echo "Starting ACR Cleanup based on $DEL_FILE"
-      echo "========================================"
-
-      IMAGES_FOUND=0
-      IMAGES_DELETED=0
-      IMAGES_NOT_FOUND=0
-      DELETE_FAILURES=0
-
-      while IFS=$'\t' read -r ACR_NAME IMAGE_NAME; do
-        # Skip header or empty lines
-        [[ "$ACR_NAME" == "acr_name" || -z "$ACR_NAME" || -z "$IMAGE_NAME" ]] && continue
-
-        # Split IMAGE_NAME into repo and tag
-        REPO="${IMAGE_NAME%%:*}"
-        TAG="${IMAGE_NAME##*:}"
-
-        echo "Checking ACR: $ACR_NAME, Repo: $REPO, Tag: $TAG"
-
-        if az acr repository show-tags --name "$ACR_NAME" --repository "$REPO" --output tsv | grep -Fxq "$TAG"; then
-          echo "✅ Image found: $REPO:$TAG"
-          ((IMAGES_FOUND++))
-
-          # Delete the image
-          if az acr repository delete --name "$ACR_NAME" --image "$REPO:$TAG" --yes; then
-            echo "🗑️ Deleted $REPO:$TAG"
-            ((IMAGES_DELETED++))
-          else
-            echo "❌ Failed to delete $REPO:$TAG"
-            ((DELETE_FAILURES++))
-          fi
-        else
-          echo "⚠️ Image not found: $REPO:$TAG"
-          ((IMAGES_NOT_FOUND++))
+  - task: AzureCLI@2
+    name: CheckImagesInACR
+    displayName: 'Check if images exist in ACR'
+    inputs:
+      azureSubscription: 'azurerm-prod'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        #!/bin/bash
+        
+        # Read the del.txt file
+        DEL_FILE="del.txt"
+        
+        # Check if file exists
+        if [ ! -f "$DEL_FILE" ]; then
+          echo "Error: $DEL_FILE not found!"
+          exit 1
         fi
+        
+        # Skip header line and process each line
+        tail -n +2 "$DEL_FILE" | while IFS=$'\t' read -r acr_name image_name; do
+          # Skip empty lines
+          if [ -z "$acr_name" ] || [ -z "$image_name" ]; then
+            continue
+          fi
+          
+          # Trim whitespace
+          acr_name=$(echo "$acr_name" | xargs)
+          image_name=$(echo "$image_name" | xargs)
+          
+          echo "=========================================="
+          echo "Checking: $acr_name / $image_name"
+          echo "=========================================="
+          
+          # Split image_name into repo and tag
+          IFS=':' read -r repo tag <<< "$image_name"
+          
+          if [ -z "$repo" ] || [ -z "$tag" ]; then
+            echo "⚠️  Invalid image format: $image_name (expected repo:tag)"
+            echo "FOUND_STATUS=INVALID_FORMAT"
+            echo "IMAGE_STATUS=invalid"
+            continue
+          fi
+          
+          # Full image reference
+          full_image="${acr_name}.azurecr.io/${repo}:${tag}"
+          
+          echo "Full image: $full_image"
+          
+          # Check if image exists in ACR
+          if az acr repository show-tags \
+            --name "$acr_name" \
+            --repository "$repo" \
+            --query "contains([], '$tag')" \
+            --output tsv 2>/dev/null | grep -q "true"; then
+            
+            # Alternative method: Try to get image manifest
+            if az acr repository show-manifests \
+              --name "$acr_name" \
+              --repository "$repo" \
+              --query "[?tags[?contains(@, '$tag')]]" \
+              --output tsv 2>/dev/null | grep -q "$tag"; then
+              
+              echo "✅ IMAGE FOUND: $full_image"
+              echo "FOUND_STATUS=FOUND"
+              echo "IMAGE_STATUS=found"
+              
+              # Get image details
+              echo "Image details:"
+              az acr repository show \
+                --name "$acr_name" \
+                --repository "$repo" \
+                --query "[?tags[?contains(@, '$tag')]]" \
+                --output table 2>/dev/null || true
+            else
+              echo "❌ IMAGE NOT FOUND: $full_image"
+              echo "FOUND_STATUS=NOT_FOUND"
+              echo "IMAGE_STATUS=not_found"
+            fi
+          else
+            echo "❌ IMAGE NOT FOUND: $full_image"
+            echo "FOUND_STATUS=NOT_FOUND"
+            echo "IMAGE_STATUS=not_found"
+            
+            # Check if repository exists at all
+            if az acr repository show --name "$acr_name" --repository "$repo" &>/dev/null; then
+              echo "Repository '$repo' exists but tag '$tag' not found"
+              echo "Available tags for this repository:"
+              az acr repository show-tags \
+                --name "$acr_name" \
+                --repository "$repo" \
+                --output table || true
+            else
+              echo "Repository '$repo' does not exist in ACR"
+            fi
+          fi
+          
+          echo ""
+          
+          # Set pipeline variable for this image (optional)
+          echo "##vso[task.setvariable variable=IMAGE_${repo//[-\/]/_}_STATUS]${FOUND_STATUS}"
+        done
+        
+        echo "=========================================="
+        echo "Image check completed"
+        echo "=========================================="
 
-      done < "$DEL_FILE"
-
-      echo "========================================"
-      echo "ACR Cleanup Summary"
-      echo "Images Found     : $IMAGES_FOUND"
-      echo "Images Deleted   : $IMAGES_DELETED"
-      echo "Images Not Found : $IMAGES_NOT_FOUND"
-      echo "Delete Failures  : $DELETE_FAILURES"
-      echo "========================================"
+  - script: |
+      echo "Image check completed. Check the logs above for details."
+      echo "You can also use the following variables in subsequent steps:"
+      env | grep "IMAGE_.*_STATUS" || echo "No image status variables set"
+    displayName: 'Display check results'
