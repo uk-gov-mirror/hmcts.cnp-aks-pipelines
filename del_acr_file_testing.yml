@@ -9,7 +9,7 @@ steps:
     name: DeleteImageFromACR
     displayName: 'Check and delete image from ACR'
     inputs:
-      azureSubscription: 'azurerm-sandbox'
+      azureSubscription: 'azurerm-prod'
       scriptType: 'bash'
       scriptLocation: 'inlineScript'
       inlineScript: |
@@ -19,7 +19,7 @@ steps:
         set -x
         
         # Define the image to delete
-        IMAGE="hmctssbox.azurecr.io/crumble/recipe-backend:pr-1266-5b225da-20260216130151"
+        IMAGE="hmctsprod.azurecr.io/ccd/case-disposer:prod-47f27e8-20260324075642"
         
         echo "=========================================="
         echo "ACR Image Deletion Process with Debugging"

@@ -1,1 +1,1 @@
-hmctssbox.azurecr.io/crumble/recipe-backend:pr-1266-5b225da-20260216130151
+hmctsprod.azurecr.io/ccd/case-disposer:prod-47f27e8-20260324075642
