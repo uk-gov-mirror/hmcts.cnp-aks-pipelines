@@ -39,7 +39,7 @@ run_cleanup_with_retry() {
     local temp_log
     temp_log=$(mktemp)
     local last_output=""
-    local purge_cmd="acr purge --registry \$RegistryName ${filter_args} --ago ${older_than} --keep ${keep_min_latest_num} --untagged --concurrency 5"
+    local purge_cmd="acr purge --registry \$RegistryName ${filter_args} --ago ${older_than} --keep ${keep_min_latest_num} --untagged --concurrency 3"
 
     # Cleanup temp file on exit
     trap "rm -f \"$temp_log\"" EXIT
