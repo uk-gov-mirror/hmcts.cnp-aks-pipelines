@@ -61,30 +61,39 @@ report_errors_for_investigation() {
     '
 }
 
-# Print all skipped manifest deletion entries and promote them to ADO warnings.
-report_skipped_entries() {
+# Report only transient ACR API delete/purge errors to Azure DevOps warnings.
+report_transient_errors_to_ado() {
     local output="$1"
-    local skipped_lines=""
+    local transient_lines=""
 
     if [ -z "$output" ]; then
         return 1
     fi
 
-    skipped_lines=$(echo "$output" | awk '/Skipped .*HTTP status: 404/ { print }')
-    if [ -z "$skipped_lines" ]; then
+    transient_lines=$(echo "$output" | awk '
+        /Failed to delete .*StatusCode=500/ ||
+        /Error: failed to purge tags:.*StatusCode=500/ ||
+        /Failed to complete purge:.*StatusCode=500/ ||
+        /error response cannot be parsed/ ||
+        /error: EOF/ {
+            if (!seen[$0]++) print $0
+        }
+    ')
+
+    if [ -z "$transient_lines" ]; then
         return 1
     fi
 
-    echo "$(TERM=xterm tput setaf 3)Skipped manifest deletions requiring investigation:"
-    echo "$skipped_lines"
+    echo "$(TERM=xterm tput setaf 3)Transient ACR API errors reported to Azure DevOps:"
+    echo "$transient_lines"
 
-    # Emit each skipped line as a pipeline warning so it is visible in Azure DevOps summary.
+    # Emit each transient line as a pipeline warning so it is visible in Azure DevOps summary.
     while IFS= read -r line; do
         [ -n "$line" ] || continue
         echo "##vso[task.logissue type=warning]$line"
-    done <<< "$skipped_lines"
+    done <<< "$transient_lines"
 
-    mark_ado_succeeded_with_issues "ACR cleanup completed with skipped manifest deletions."
+    mark_ado_succeeded_with_issues "ACR cleanup completed with transient ACR API warnings."
     return 0
 }
 
@@ -120,7 +129,6 @@ run_cleanup_with_retry() {
         
         # If successful, return
         if [ $exit_code -eq 0 ]; then
-            report_skipped_entries "$last_output" || true
             echo "$(TERM=xterm tput setaf 2)Cleanup completed successfully on attempt $attempt"
             rm -f "$temp_log"
             return 0
@@ -131,6 +139,7 @@ run_cleanup_with_retry() {
             if [ $attempt -lt $max_retries ]; then
                 echo "$(TERM=xterm tput setaf 3)Transient error detected (attempt $attempt/$max_retries, exit code: $exit_code):"
                 report_errors_for_investigation "$last_output"
+                report_transient_errors_to_ado "$last_output" || true
                 echo "$(TERM=xterm tput setaf 6)Retrying in ${retry_delay} seconds..."
                 sleep $retry_delay
                 # Exponential backoff for subsequent retries
@@ -139,7 +148,7 @@ run_cleanup_with_retry() {
             else
                 echo "$(TERM=xterm tput setaf 3)Warning: Cleanup hit transient ACR API errors after $max_retries attempts (exit code: $exit_code)."
                 report_errors_for_investigation "$last_output"
-                report_skipped_entries "$last_output" || true
+                report_transient_errors_to_ado "$last_output" || true
                 echo "All retry attempts exhausted for transient errors. Continuing pipeline."
                 mark_ado_succeeded_with_issues "ACR cleanup continued after transient ACR API failures."
                 rm -f "$temp_log"
