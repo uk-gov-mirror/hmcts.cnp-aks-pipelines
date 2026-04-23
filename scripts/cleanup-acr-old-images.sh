@@ -20,15 +20,33 @@ echo "$(TERM=xterm tput setaf 2)Cleaning up $registry, deleting [${filter_args}]
 # Function to check if error is transient
 is_transient_error() {
     local output="$1"
-    # Check for common transient error patterns:
+    # Soft-fail only for known transient ACR API signatures:
     # - HTTP 500 errors
     # - EOF errors
     # - Parse errors from Azure API
-    # - Connection timeouts
-    if echo "$output" | grep -qiE "(StatusCode=500|EOF|error response cannot be parsed|timeout|connection.*refused|temporary|transient)" 2>/dev/null; then
+    if echo "$output" | grep -qiE "(StatusCode=500|EOF|error response cannot be parsed)" 2>/dev/null; then
         return 0  # Is transient
     fi
     return 1  # Not transient
+}
+
+# Print all relevant errors for investigation.
+report_errors_for_investigation() {
+    local output="$1"
+    echo "$(TERM=xterm tput setaf 1)Errors requiring investigation:"
+    if [ -z "$output" ]; then
+        echo "No captured output available."
+        return 0
+    fi
+
+    # Show all matching error lines and deduplicate for readability.
+    # This keeps the noisy failure context visible for follow-up.
+    echo "$output" | awk '
+        BEGIN { IGNORECASE=1 }
+        /failed|error|StatusCode|EOF|cannot be parsed|Run ID|Container failed|exit status/ {
+            if (!seen[$0]++) print $0
+        }
+    '
 }
 
 # Function to run cleanup with retry logic
@@ -39,7 +57,7 @@ run_cleanup_with_retry() {
     local temp_log
     temp_log=$(mktemp)
     local last_output=""
-    local purge_cmd="acr purge --registry \$RegistryName ${filter_args} --ago ${older_than} --keep ${keep_min_latest_num} --untagged --concurrency 3"
+    local purge_cmd="acr purge --registry \$RegistryName ${filter_args} --ago ${older_than} --keep ${keep_min_latest_num} --untagged --concurrency 5"
 
     # Cleanup temp file on exit
     trap "rm -f \"$temp_log\"" EXIT
@@ -68,36 +86,27 @@ run_cleanup_with_retry() {
             return 0
         fi
         
-        # Check if error is transient based on exit code and output
-        # Exit code 1 with 500 errors or parse errors are typically transient
-        if [ $exit_code -eq 1 ] || is_transient_error "$last_output"; then
+        # Check if error is transient based on known ACR API signatures only.
+        if is_transient_error "$last_output"; then
             if [ $attempt -lt $max_retries ]; then
                 echo "$(TERM=xterm tput setaf 3)Transient error detected (attempt $attempt/$max_retries, exit code: $exit_code):"
-                if [ -n "$last_output" ]; then
-                    echo "$last_output" | tail -5
-                else
-                    echo "Error occurred during ACR cleanup task (check ACR task logs for details)"
-                fi
+                report_errors_for_investigation "$last_output"
                 echo "$(TERM=xterm tput setaf 6)Retrying in ${retry_delay} seconds..."
                 sleep $retry_delay
                 # Exponential backoff for subsequent retries
                 retry_delay=$((retry_delay * 2))
                 attempt=$((attempt + 1))
             else
-                echo "$(TERM=xterm tput setaf 1)Error: Cleanup failed after $max_retries attempts due to transient errors (exit code: $exit_code):"
-                if [ -n "$last_output" ]; then
-                    echo "$last_output" | tail -10
-                fi
-                echo "All retry attempts exhausted. Failing pipeline."
+                echo "$(TERM=xterm tput setaf 3)Warning: Cleanup hit transient ACR API errors after $max_retries attempts (exit code: $exit_code)."
+                report_errors_for_investigation "$last_output"
+                echo "All retry attempts exhausted for transient errors. Continuing pipeline."
                 rm -f "$temp_log"
-                return $exit_code  # Fail the pipeline
+                return 0
             fi
         else
             # Permanent error - don't retry
             echo "$(TERM=xterm tput setaf 1)Permanent error detected (exit code: $exit_code, not retrying):"
-            if [ -n "$last_output" ]; then
-                echo "$last_output" | tail -10
-            fi
+            report_errors_for_investigation "$last_output"
             rm -f "$temp_log"
             return $exit_code
         fi
